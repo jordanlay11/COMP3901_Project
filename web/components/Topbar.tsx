@@ -1,15 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
 export default function Topbar() {
   const [time, setTime] = useState("");
+  const [userName, setUserName] = useState("");
 
+  // Live clock
   useEffect(() => {
     const update = () => setTime(new Date().toTimeString().slice(0, 8));
     update();
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Get the logged-in officer's display name from Firebase Auth
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Use displayName if set, otherwise fall back to the email prefix
+        setUserName(user.displayName ?? user.email?.split("@")[0] ?? "Officer");
+      }
+    });
+    return () => unsubscribe();
   }, []);
 
   return (
@@ -26,7 +41,7 @@ export default function Topbar() {
           <div className="live-dot" />
           LIVE — {time}
         </div>
-        <div className="admin-badge">👤 Cpl. Williams ▾</div>
+        {userName && <div className="admin-badge">👤 {userName} ▾</div>}
       </div>
     </div>
   );

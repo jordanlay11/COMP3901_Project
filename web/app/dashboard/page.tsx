@@ -1,114 +1,175 @@
+"use client";
+
+// "use client" is needed because we use hooks and Firebase listeners
+// which only work in the browser, not on the server.
+
+import { useEffect, useState } from "react";
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  onSnapshot,
+  query,
+  orderBy,
+  limit,
+  where,
+} from "firebase/firestore";
 import StatCard from "@/components/Statcard";
 import ReportItem from "@/components/Reportitem";
 import RiskZone from "@/components/Riskzone";
 import Link from "next/link";
+import { useAuthGuard } from "@/lib/useAuthGuard";
 
-const recentReports = [
-  {
-    title: "Persons trapped — flash flood",
-    meta: "Bull Bay, St. Andrew · 14:18 · RPT-0041",
-    severity: "critical" as const,
-    status: "pending" as const,
-  },
-  {
-    title: "Road completely blocked — landslide",
-    meta: "Buff Bay, Portland · 13:55 · RPT-0040",
-    severity: "critical" as const,
-    status: "progress" as const,
-  },
-  {
-    title: "Building structural damage",
-    meta: "Portmore, St. Catherine · 13:30 · RPT-0039",
-    severity: "high" as const,
-    status: "progress" as const,
-  },
-  {
-    title: "Power lines down — road hazard",
-    meta: "Spanish Town, St. Catherine · 12:44 · RPT-0038",
-    severity: "medium" as const,
-    status: "pending" as const,
-  },
-  {
-    title: "Minor flooding — residential area",
-    meta: "Kingston 6 · 12:10 · RPT-0037",
-    severity: "low" as const,
-    status: "resolved" as const,
-  },
-];
+// What a report looks like — must match what the mobile app saves to Firestore
+interface Report {
+  id: string;
+  type: string;
+  severity: "critical" | "high" | "medium" | "low";
+  status: "pending" | "progress" | "resolved";
+  location: { lat: number; lng: number; address?: string };
+  parish: string;
+  createdAt: any;
+}
 
-const riskZones = [
-  { name: "Bull Bay", parish: "St. Andrew", score: 92 },
-  { name: "Buff Bay", parish: "Portland", score: 85 },
-  { name: "Portmore", parish: "St. Catherine", score: 67 },
-  { name: "Spanish Town", parish: "St. Catherine", score: 54 },
-  { name: "May Pen", parish: "Clarendon", score: 38 },
-  { name: "Mandeville", parish: "Manchester", score: 21 },
-];
+// ─────────────────────────────────────────
+// RISK SCORING ALGORITHM
+// Takes all current reports and calculates a danger score (0–100) per parish.
+// Score goes up based on: how many reports, how severe, how recent.
+// This is the "computation" part your supervisor asked for.
+// ─────────────────────────────────────────
+function calculateRiskScores(reports: Report[]) {
+  const parishScores: Record<string, number> = {};
 
-const activityFeed = [
-  {
-    time: "14:31",
-    text: (
-      <>
-        <strong>AI Alert:</strong> 6 flood reports clustered in Bull Bay — surge
-        detected, zone escalated to CRITICAL
-      </>
-    ),
-  },
-  {
-    time: "14:18",
-    text: (
-      <>
-        New SOS received from <strong>18.0°N, 76.7°W</strong> — Bull Bay area —
-        assigned to Unit 7
-      </>
-    ),
-  },
-  {
-    time: "13:55",
-    text: (
-      <>
-        RPT-0040 status changed to <strong>In Progress</strong> — Cpl. Davis
-        dispatched
-      </>
-    ),
-  },
-  {
-    time: "13:45",
-    text: (
-      <>
-        Push notification broadcast — <strong>Hurricane watch</strong> — sent to
-        14,820 users in St. Thomas, Portland, St. Mary
-      </>
-    ),
-  },
-  {
-    time: "12:10",
-    text: (
-      <>
-        RPT-0037 marked <strong>Resolved</strong> — minor flooding cleared,
-        Kingston 6
-      </>
-    ),
-  },
-];
+  reports.forEach((r) => {
+    if (r.status === "resolved") return; // resolved reports don't count toward risk
+
+    // Weight each severity level differently
+    const severityWeight =
+      r.severity === "critical"
+        ? 40
+        : r.severity === "high"
+          ? 25
+          : r.severity === "medium"
+            ? 10
+            : 5;
+
+    // Recency bonus: reports in the last hour count more
+    const now = Date.now();
+    const reportMs = r.createdAt?.toDate?.()?.getTime?.() ?? now;
+    const ageHours = (now - reportMs) / (1000 * 60 * 60);
+    const recencyBonus = ageHours < 1 ? 15 : ageHours < 6 ? 8 : 0;
+
+    const parish = r.parish || "Unknown";
+    parishScores[parish] =
+      (parishScores[parish] ?? 0) + severityWeight + recencyBonus;
+  });
+
+  // Cap scores at 100 and sort highest first
+  return Object.entries(parishScores)
+    .map(([parish, score]) => ({
+      name: parish,
+      parish: parish,
+      score: Math.min(Math.round(score), 100),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6); // show top 6 parishes
+}
 
 export default function DashboardPage() {
+  const { loading: authLoading } = useAuthGuard();
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState("");
+
+  // Live clock that updates every minute
+  useEffect(() => {
+    const update = () => {
+      setCurrentTime(
+        new Date().toLocaleString("en-JM", {
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      );
+    };
+    update();
+    const interval = setInterval(update, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (authLoading) return;
+
+    const q = query(collection(db, "reports"), orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as Report[];
+
+      setReports(data);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [authLoading]);
+
+  // ── Derived stats from real data ──
+  // These recalculate automatically every time reports updates
+
+  // Count reports by severity (only non-resolved ones)
+  const active = reports.filter((r) => r.status !== "resolved");
+  const critical = active.filter((r) => r.severity === "critical").length;
+  const high = active.filter((r) => r.severity === "high").length;
+  const medium = active.filter((r) => r.severity === "medium").length;
+
+  // Count resolved reports from today only
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const resolvedToday = reports.filter((r) => {
+    if (r.status !== "resolved") return false;
+    const reportDate = r.createdAt?.toDate?.() ?? new Date(0);
+    return reportDate >= todayStart;
+  }).length;
+
+  // Most recent 5 reports for the feed
+  const recentReports = reports.slice(0, 5);
+
+  // Run the risk scoring algorithm on all current reports
+  const riskZones = calculateRiskScores(reports);
+
+  // Format timestamp to readable time
+  const formatTime = (timestamp: any) => {
+    if (!timestamp) return "—";
+    const date = timestamp.toDate?.() ?? new Date(timestamp);
+    return date.toLocaleTimeString("en-JM", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  if (authLoading) return null;
+
   return (
     <div>
-      {/* Alert Ticker */}
-      <div className="alert-ticker">
-        <span>⚠</span>
-        ACTIVE ALERT: Hurricane watch in effect — St. Thomas, Portland, St. Mary
-        — NWS bulletin issued 13:45
-      </div>
+      {/* Alert Ticker — shown when there are critical reports */}
+      {critical > 0 && (
+        <div className="alert-ticker">
+          <span>⚠</span>
+          {critical} CRITICAL incident{critical > 1 ? "s" : ""} active —
+          immediate response required
+        </div>
+      )}
 
       {/* Page Header */}
       <div className="page-header">
         <div>
           <div className="page-title">Command Dashboard</div>
           <div className="page-subtitle">
-            THU 12 FEB 2026 · Last updated 14:32
+            {loading ? "Loading..." : currentTime + " · Live"}
           </div>
         </div>
         <Link href="/reports">
@@ -116,31 +177,37 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      {/* Stats */}
+      {/* Stats — all calculated from real Firestore data */}
       <div className="stats-grid">
         <StatCard
           label="Critical"
-          value={4}
-          change="+2 since 09:00"
+          value={loading ? "—" : critical}
+          change="Active incidents"
           variant="critical"
         />
         <StatCard
           label="High Priority"
-          value={9}
-          change="+3 since 09:00"
+          value={loading ? "—" : high}
+          change="Active incidents"
           variant="high"
         />
-        <StatCard label="Medium" value={17} change="Stable" variant="medium" />
+        <StatCard
+          label="Medium"
+          value={loading ? "—" : medium}
+          change="Active incidents"
+          variant="medium"
+        />
         <StatCard
           label="Resolved Today"
-          value={11}
-          change="↑ 8 yesterday"
+          value={loading ? "—" : resolvedToday}
+          change="Closed today"
           variant="resolved"
         />
       </div>
 
-      {/* Reports + Risk Zones */}
+      {/* Recent Reports + Risk Zones */}
       <div className="grid-3-1">
+        {/* Recent Reports — live from Firestore */}
         <div className="card">
           <div className="card-header">
             <div className="card-title">Recent Reports</div>
@@ -154,25 +221,81 @@ export default function DashboardPage() {
             </Link>
           </div>
           <div className="card-body" style={{ padding: "0 20px" }}>
-            {recentReports.map((r, i) => (
-              <ReportItem key={i} {...r} />
-            ))}
+            {loading ? (
+              <div
+                style={{
+                  padding: "20px",
+                  color: "var(--gray)",
+                  fontSize: "13px",
+                }}
+              >
+                Loading...
+              </div>
+            ) : recentReports.length === 0 ? (
+              <div
+                style={{
+                  padding: "20px",
+                  color: "var(--gray)",
+                  fontSize: "13px",
+                }}
+              >
+                No reports yet.
+              </div>
+            ) : (
+              recentReports.map((r) => (
+                <ReportItem
+                  key={r.id}
+                  title={r.type}
+                  meta={`${r.location?.address ?? r.parish} · ${formatTime(r.createdAt)}`}
+                  severity={r.severity}
+                  status={r.status}
+                />
+              ))
+            )}
           </div>
         </div>
 
+        {/* Risk Zones — calculated by algorithm from real report data */}
         <div className="card">
           <div className="card-header">
             <div className="card-title">Risk Zones</div>
           </div>
           <div className="card-body" style={{ padding: "8px 20px" }}>
-            {riskZones.map((z, i) => (
-              <RiskZone key={i} {...z} />
-            ))}
+            {loading ? (
+              <div
+                style={{
+                  padding: "12px",
+                  color: "var(--gray)",
+                  fontSize: "13px",
+                }}
+              >
+                Calculating...
+              </div>
+            ) : riskZones.length === 0 ? (
+              <div
+                style={{
+                  padding: "12px",
+                  color: "var(--gray)",
+                  fontSize: "13px",
+                }}
+              >
+                No risk data yet.
+              </div>
+            ) : (
+              riskZones.map((z, i) => (
+                <RiskZone
+                  key={i}
+                  name={z.name}
+                  parish={z.parish}
+                  score={z.score}
+                />
+              ))
+            )}
           </div>
         </div>
       </div>
 
-      {/* Activity Feed */}
+      {/* Activity Feed — built from the 10 most recent reports */}
       <div className="card">
         <div className="card-header">
           <div className="card-title">Activity Feed</div>
@@ -187,12 +310,38 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="card-body" style={{ padding: "4px 20px" }}>
-          {activityFeed.map((a, i) => (
-            <div key={i} className="activity-item">
-              <div className="activity-time">{a.time}</div>
-              <div className="activity-text">{a.text}</div>
+          {loading ? (
+            <div
+              style={{
+                padding: "16px",
+                color: "var(--gray)",
+                fontSize: "13px",
+              }}
+            >
+              Loading...
             </div>
-          ))}
+          ) : reports.slice(0, 10).length === 0 ? (
+            <div
+              style={{
+                padding: "16px",
+                color: "var(--gray)",
+                fontSize: "13px",
+              }}
+            >
+              No activity yet.
+            </div>
+          ) : (
+            reports.slice(0, 10).map((r) => (
+              <div key={r.id} className="activity-item">
+                <div className="activity-time">{formatTime(r.createdAt)}</div>
+                <div className="activity-text">
+                  New <strong>{r.severity}</strong> report — {r.type} in{" "}
+                  <strong>{r.location?.address ?? r.parish}</strong> · Status:{" "}
+                  {r.status}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

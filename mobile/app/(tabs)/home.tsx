@@ -4,85 +4,113 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  FlatList,
+  ActivityIndicator,
 } from "react-native";
+import { useEffect, useState } from "react";
+import { db, auth } from "@/lib/firebase";
+import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import { Colors } from "@/constants/colors";
 
-const riskZones = [
-  {
-    id: "1",
-    name: "Bull Bay",
-    parish: "St. Andrew",
-    score: 92,
-    color: Colors.red,
-  },
-  {
-    id: "2",
-    name: "Buff Bay",
-    parish: "Portland",
-    score: 85,
-    color: Colors.red,
-  },
-  {
-    id: "3",
-    name: "Portmore",
-    parish: "St. Catherine",
-    score: 67,
-    color: Colors.orange,
-  },
-  {
-    id: "4",
-    name: "May Pen",
-    parish: "Clarendon",
-    score: 38,
-    color: Colors.yellow,
-  },
-];
+interface Report {
+  id: string;
+  type: string;
+  severity: "critical" | "high" | "medium" | "low";
+  status: "pending" | "progress" | "resolved";
+  location: { lat: number; lng: number; address?: string };
+  parish: string;
+  createdAt: any;
+}
 
-const feedItems = [
-  {
-    id: "1",
-    icon: "⚠️",
-    title: "Flash flood — Bull Bay",
-    meta: "14:18 · St. Andrew",
-    tag: "Critical",
-    tagColor: Colors.red,
-  },
-  {
-    id: "2",
-    icon: "📡",
-    title: "Hurricane watch issued",
-    meta: "13:45 · NWS Bulletin",
-    tag: "Alert",
-    tagColor: Colors.blue,
-  },
-  {
-    id: "3",
-    icon: "🚧",
-    title: "Road blocked — Buff Bay",
-    meta: "13:55 · Portland",
-    tag: "High",
-    tagColor: Colors.orange,
-  },
-  {
-    id: "4",
-    icon: "✅",
-    title: "Flooding cleared — Kingston 6",
-    meta: "12:10 · Kingston",
-    tag: "Resolved",
-    tagColor: Colors.green,
-  },
-  {
-    id: "5",
-    icon: "🏫",
-    title: "Shelter open — Bull Bay Primary",
-    meta: "11:30 · 340/400 capacity",
-    tag: "Shelter",
-    tagColor: Colors.blue,
-  },
-];
+// Same risk scoring algorithm as the web dashboard
+// Calculates a danger score per parish from real report data
+function calcRiskZones(reports: Report[]) {
+  const scores: Record<string, number> = {};
+
+  reports.forEach((r) => {
+    if (r.status === "resolved") return;
+    const weight =
+      r.severity === "critical"
+        ? 40
+        : r.severity === "high"
+          ? 25
+          : r.severity === "medium"
+            ? 10
+            : 5;
+    const now = Date.now();
+    const age = r.createdAt?.toDate?.()?.getTime?.() ?? now;
+    const bonus = (now - age) / (1000 * 60 * 60) < 1 ? 15 : 0;
+    const p = r.parish || "Unknown";
+    scores[p] = (scores[p] ?? 0) + weight + bonus;
+  });
+
+  return Object.entries(scores)
+    .map(([name, score]) => ({ name, score: Math.min(Math.round(score), 100) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+// Pick color based on risk score
+function scoreColor(score: number) {
+  if (score >= 75) return Colors.red;
+  if (score >= 50) return Colors.orange;
+  if (score >= 25) return Colors.yellow;
+  return Colors.green;
+}
+
+// Pick icon and tag color based on severity
+function sevMeta(severity: string) {
+  const map: Record<string, { icon: string; color: string; tag: string }> = {
+    critical: { icon: "⚠️", color: Colors.red, tag: "Critical" },
+    high: { icon: "🚧", color: Colors.orange, tag: "High" },
+    medium: { icon: "⚡", color: Colors.yellow, tag: "Medium" },
+    low: { icon: "✅", color: Colors.green, tag: "Low" },
+  };
+  return map[severity] ?? map.low;
+}
+
+function formatTime(ts: any) {
+  if (!ts) return "";
+  const d = ts.toDate?.() ?? new Date(ts);
+  return d.toLocaleTimeString("en-JM", { hour: "2-digit", minute: "2-digit" });
+}
 
 export default function HomeScreen() {
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [userName, setUserName] = useState("");
+
+  // Get logged-in user's name from Firebase Auth
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setUserName(user.displayName ?? user.email?.split("@")[0] ?? "User");
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Subscribe to real-time reports from Firestore
+  useEffect(() => {
+    const q = query(collection(db, "reports"), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      setReports(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Report[]);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const riskZones = calcRiskZones(reports);
+  const criticalCount = reports.filter(
+    (r) => r.severity === "critical" && r.status !== "resolved",
+  ).length;
+  const feedItems = reports.slice(0, 8); // show 8 most recent
+
+  // Greeting based on time of day
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -90,71 +118,96 @@ export default function HomeScreen() {
         <View style={styles.header}>
           <View style={styles.headerTop}>
             <View>
-              <Text style={styles.greeting}>Good afternoon,</Text>
-              <Text style={styles.name}>Marcus 👋</Text>
+              <Text style={styles.greeting}>{greeting},</Text>
+              <Text style={styles.name}>{userName || "..."} 👋</Text>
             </View>
             <View style={styles.notifBtn}>
               <Text style={{ fontSize: 18 }}>🔔</Text>
-              <View style={styles.notifDot} />
+              {criticalCount > 0 && <View style={styles.notifDot} />}
             </View>
           </View>
 
-          {/* Alert Banner */}
-          <View style={styles.alertBanner}>
-            <View style={styles.alertPulse} />
-            <Text style={styles.alertText}>
-              Hurricane Watch — St. Thomas, Portland, St. Mary
-            </Text>
-          </View>
+          {/* Only show alert banner when there are critical active reports */}
+          {criticalCount > 0 && (
+            <View style={styles.alertBanner}>
+              <View style={styles.alertPulse} />
+              <Text style={styles.alertText}>
+                {criticalCount} critical incident{criticalCount > 1 ? "s" : ""}{" "}
+                active in your area
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Risk Zones */}
         <View style={styles.sectionRow}>
           <Text style={styles.sectionTitle}>Risk Zones</Text>
-          <Text style={styles.seeAll}>See all</Text>
         </View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.riskScroll}
-        >
-          {riskZones.map((zone) => (
-            <View key={zone.id} style={styles.riskCard}>
-              <Text style={[styles.riskScore, { color: zone.color }]}>
-                {zone.score}
-              </Text>
-              <Text style={styles.riskName}>{zone.name}</Text>
-              <Text style={styles.riskParish}>{zone.parish}</Text>
-            </View>
-          ))}
-        </ScrollView>
 
-        {/* Feed */}
+        {loading ? (
+          <ActivityIndicator color={Colors.red} style={{ margin: 20 }} />
+        ) : riskZones.length === 0 ? (
+          <Text style={styles.emptyText}>No active risk zones</Text>
+        ) : (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.riskScroll}
+          >
+            {riskZones.map((zone) => (
+              <View key={zone.name} style={styles.riskCard}>
+                <Text
+                  style={[styles.riskScore, { color: scoreColor(zone.score) }]}
+                >
+                  {zone.score}
+                </Text>
+                <Text style={styles.riskName}>{zone.name}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Live Feed */}
         <View style={styles.sectionRow}>
           <Text style={styles.sectionTitle}>Live Feed</Text>
-          <Text style={styles.seeAll}>Filter</Text>
+          <Text style={styles.seeAll}>
+            {loading ? "" : `${reports.length} reports`}
+          </Text>
         </View>
-        {feedItems.map((item) => (
-          <View key={item.id} style={styles.feedItem}>
-            <View style={styles.feedIcon}>
-              <Text style={{ fontSize: 20 }}>{item.icon}</Text>
-            </View>
-            <View style={styles.feedContent}>
-              <Text style={styles.feedTitle}>{item.title}</Text>
-              <Text style={styles.feedMeta}>{item.meta}</Text>
-            </View>
-            <View
-              style={[
-                styles.feedTag,
-                { backgroundColor: item.tagColor + "25" },
-              ]}
-            >
-              <Text style={[styles.feedTagText, { color: item.tagColor }]}>
-                {item.tag}
-              </Text>
-            </View>
-          </View>
-        ))}
+
+        {loading ? (
+          <ActivityIndicator color={Colors.red} style={{ margin: 20 }} />
+        ) : feedItems.length === 0 ? (
+          <Text style={styles.emptyText}>No reports yet</Text>
+        ) : (
+          feedItems.map((item) => {
+            const meta = sevMeta(item.severity);
+            return (
+              <View key={item.id} style={styles.feedItem}>
+                <View style={styles.feedIcon}>
+                  <Text style={{ fontSize: 20 }}>{meta.icon}</Text>
+                </View>
+                <View style={styles.feedContent}>
+                  <Text style={styles.feedTitle}>{item.type}</Text>
+                  <Text style={styles.feedMeta}>
+                    {item.location?.address ?? item.parish} ·{" "}
+                    {formatTime(item.createdAt)}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.feedTag,
+                    { backgroundColor: meta.color + "25" },
+                  ]}
+                >
+                  <Text style={[styles.feedTagText, { color: meta.color }]}>
+                    {meta.tag}
+                  </Text>
+                </View>
+              </View>
+            );
+          })
+        )}
 
         <View style={{ height: 20 }} />
       </ScrollView>
@@ -164,8 +217,13 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.navy },
+  emptyText: {
+    fontSize: 13,
+    color: Colors.muted,
+    textAlign: "center",
+    margin: 20,
+  },
 
-  // Header
   header: {
     backgroundColor: Colors.surface,
     padding: 20,
@@ -220,7 +278,6 @@ const styles = StyleSheet.create({
   },
   alertText: { fontSize: 12, color: Colors.red, fontWeight: "600", flex: 1 },
 
-  // Sections
   sectionRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -236,12 +293,11 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
     textTransform: "uppercase",
   },
-  seeAll: { fontSize: 12, color: Colors.red, fontWeight: "600" },
+  seeAll: { fontSize: 12, color: Colors.muted },
 
-  // Risk
   riskScroll: { paddingHorizontal: 20, gap: 12, paddingBottom: 4 },
   riskCard: {
-    width: 120,
+    width: 110,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -254,10 +310,8 @@ const styles = StyleSheet.create({
     lineHeight: 32,
     marginBottom: 4,
   },
-  riskName: { fontSize: 12, fontWeight: "600", color: Colors.text },
-  riskParish: { fontSize: 11, color: Colors.muted },
+  riskName: { fontSize: 11, fontWeight: "600", color: Colors.text },
 
-  // Feed
   feedItem: {
     marginHorizontal: 20,
     marginBottom: 10,
@@ -286,11 +340,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   feedMeta: { fontSize: 11, color: Colors.muted },
-  feedTag: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
+  feedTag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   feedTagText: {
     fontSize: 10,
     fontWeight: "700",

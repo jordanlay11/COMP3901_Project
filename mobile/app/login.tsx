@@ -7,12 +7,52 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Alert,
+  ActivityIndicator,
 } from "react-native";
+import { useState } from "react";
 import { useRouter } from "expo-router";
+import { auth } from "@/lib/firebase";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { Colors } from "@/constants/colors";
 
 export default function LoginScreen() {
   const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!email.trim() || !password.trim()) {
+      Alert.alert("Missing Info", "Please enter your email and password.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      // Sign in with Firebase Authentication
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      // Replace so the user can't go back to login with the back button
+      router.replace("/(tabs)/home");
+    } catch (err: any) {
+      // Map Firebase error codes to readable messages
+      if (
+        err.code === "auth/invalid-credential" ||
+        err.code === "auth/wrong-password"
+      ) {
+        Alert.alert("Login Failed", "Incorrect email or password.");
+      } else if (err.code === "auth/user-not-found") {
+        Alert.alert("Login Failed", "No account found with this email.");
+      } else if (err.code === "auth/too-many-requests") {
+        Alert.alert("Too Many Attempts", "Please try again later.");
+      } else {
+        Alert.alert("Error", "Login failed. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <KeyboardAvoidingView
@@ -23,24 +63,24 @@ export default function LoginScreen() {
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
       >
-        {/* Hero */}
         <View style={styles.hero}>
           <View style={styles.emblem}>
             <Text style={styles.emblemText}>🚨</Text>
           </View>
           <Text style={styles.title}>Jamaica Disaster{"\n"}Response</Text>
-          <Text style={styles.subtitle}>Stay informed Stay safe</Text>
+          <Text style={styles.subtitle}>Stay informed. Stay safe.</Text>
         </View>
 
-        {/* Form */}
         <View style={styles.form}>
-          <Text style={styles.label}>Phone Number or Email</Text>
+          <Text style={styles.label}>Email</Text>
           <TextInput
             style={styles.input}
-            placeholder="e.g. 876-XXX-XXXX"
+            placeholder="your@email.com"
             placeholderTextColor={Colors.muted}
             keyboardType="email-address"
             autoCapitalize="none"
+            value={email}
+            onChangeText={setEmail}
           />
 
           <Text style={styles.label}>Password</Text>
@@ -49,17 +89,26 @@ export default function LoginScreen() {
             placeholder="••••••••"
             placeholderTextColor={Colors.muted}
             secureTextEntry
+            value={password}
+            onChangeText={setPassword}
           />
 
           <TouchableOpacity
-            style={styles.btn}
-            onPress={() => router.replace("/(tabs)/home")}
+            style={[styles.btn, loading && { opacity: 0.7 }]}
+            onPress={handleLogin}
             activeOpacity={0.85}
+            disabled={loading}
           >
-            <Text style={styles.btnText}>Sign In</Text>
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text style={styles.btnText}>Sign In</Text>
+            )}
           </TouchableOpacity>
 
-          <Text style={styles.footer}>Don't have an account? Register</Text>
+          <Text style={styles.footer}>
+            Don't have an account? Contact your administrator
+          </Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -67,19 +116,9 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.navy,
-  },
-  scroll: {
-    flexGrow: 1,
-    justifyContent: "flex-end",
-  },
-  hero: {
-    alignItems: "center",
-    paddingVertical: 48,
-    paddingHorizontal: 24,
-  },
+  container: { flex: 1, backgroundColor: Colors.navy },
+  scroll: { flexGrow: 1, justifyContent: "flex-end" },
+  hero: { alignItems: "center", paddingVertical: 48, paddingHorizontal: 24 },
   emblem: {
     width: 72,
     height: 72,
@@ -103,12 +142,7 @@ const styles = StyleSheet.create({
     lineHeight: 34,
     marginBottom: 8,
   },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.muted,
-    textAlign: "center",
-    width: 100,
-  },
+  subtitle: { fontSize: 14, color: Colors.muted, textAlign: "center" },
   form: {
     backgroundColor: Colors.surface,
     borderTopLeftRadius: 32,
@@ -149,11 +183,7 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 6,
   },
-  btnText: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "700",
-  },
+  btnText: { color: "white", fontSize: 16, fontWeight: "700" },
   footer: {
     textAlign: "center",
     fontSize: 13,

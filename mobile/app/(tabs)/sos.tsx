@@ -5,25 +5,76 @@ import {
   StyleSheet,
   Alert,
   Animated,
+  ActivityIndicator,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useRef } from "react";
+import { useRef, useState, useEffect } from "react";
+import * as Location from "expo-location";
+import { db, auth } from "@/lib/firebase";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { Colors } from "@/constants/colors";
 
 const quickOptions = [
-  { icon: "🚑", label: "Medical Emergency" },
-  { icon: "🔥", label: "Fire" },
-  { icon: "🌊", label: "Flooding" },
-  { icon: "🏠", label: "Structural Damage" },
-  { icon: "⚡", label: "Power / Hazard" },
-  { icon: "📋", label: "File Report", isReport: true },
+  { icon: "🚑", label: "Medical Emergency", type: "Medical" },
+  { icon: "🔥", label: "Fire", type: "Fire" },
+  { icon: "🌊", label: "Flooding", type: "Flooding" },
+  { icon: "🏠", label: "Structural Damage", type: "Damage" },
+  { icon: "⚡", label: "Power / Hazard", type: "Hazard" },
+  { icon: "📋", label: "File Report", type: null, isReport: true },
 ];
 
 export default function SOSScreen() {
   const router = useRouter();
   const scaleAnim = useRef(new Animated.Value(1)).current;
+  const [location, setLocation] = useState<{
+    lat: number;
+    lng: number;
+    address: string;
+  } | null>(null);
+  const [locLoading, setLocLoading] = useState(true);
+  const [sending, setSending] = useState(false);
 
-  const handleSOS = () => {
+  // Get GPS location when screen loads
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          setLocLoading(false);
+          return;
+        }
+
+        const coords = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+        const geocode = await Location.reverseGeocodeAsync({
+          latitude: coords.coords.latitude,
+          longitude: coords.coords.longitude,
+        });
+
+        const place = geocode[0];
+        const address = place
+          ? `${place.city ?? place.district ?? ""}, ${place.region ?? ""}`.trim()
+          : `${coords.coords.latitude.toFixed(4)}°N, ${coords.coords.longitude.toFixed(4)}°W`;
+
+        setLocation({
+          lat: coords.coords.latitude,
+          lng: coords.coords.longitude,
+          address,
+        });
+      } catch (e) {
+        console.error("Location error:", e);
+      } finally {
+        setLocLoading(false);
+      }
+    })();
+  }, []);
+
+  // Send SOS — saves to Firestore as a critical report so it shows on the web dashboard
+  const sendSOS = async (type: string = "SOS") => {
+    if (sending) return;
+    setSending(true);
+
     Animated.sequence([
       Animated.timing(scaleAnim, {
         toValue: 0.92,
@@ -32,16 +83,42 @@ export default function SOSScreen() {
       }),
       Animated.timing(scaleAnim, {
         toValue: 1,
-        duration: 100,
+        duration: 150,
         useNativeDriver: true,
       }),
     ]).start();
 
-    Alert.alert(
-      "SOS Alert Sent",
-      "Location: 18.0042°N, 76.7442°W\nEmergency services have been notified.",
-      [{ text: "OK" }],
-    );
+    try {
+      const user = auth.currentUser;
+
+      await addDoc(collection(db, "reports"), {
+        type: type,
+        severity: "critical", // SOS is always critical
+        description: `SOS alert — ${type}. Immediate assistance required.`,
+        status: "pending",
+        location: {
+          lat: location?.lat ?? 18.0042,
+          lng: location?.lng ?? -76.7442,
+          address: location?.address ?? "Location unavailable",
+        },
+        parish: location?.address?.split(",")[1]?.trim() ?? "Unknown",
+        reportedBy: user?.uid ?? "anonymous",
+        isSOS: true, // flag so the dashboard can highlight SOS reports
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      Alert.alert(
+        "🚨 SOS Alert Sent",
+        `Location: ${location?.address ?? "Unknown"}\n\nEmergency services have been notified.`,
+        [{ text: "OK" }],
+      );
+    } catch (err) {
+      console.error("SOS error:", err);
+      Alert.alert("Error", "Failed to send SOS. Please call 119 directly.");
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -54,7 +131,13 @@ export default function SOSScreen() {
         </View>
         <View style={styles.locationChip}>
           <Text style={{ fontSize: 12 }}>📍</Text>
-          <Text style={styles.locationText}>GPS Active</Text>
+          {locLoading ? (
+            <ActivityIndicator size="small" color={Colors.green} />
+          ) : (
+            <Text style={styles.locationText} numberOfLines={1}>
+              {location ? location.address.split(",")[0] : "No GPS"}
+            </Text>
+          )}
         </View>
       </View>
 
@@ -64,30 +147,43 @@ export default function SOSScreen() {
           <View style={styles.ringMid}>
             <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
               <TouchableOpacity
-                style={styles.sosBtn}
-                onPress={handleSOS}
+                style={[styles.sosBtn, sending && { opacity: 0.7 }]}
+                onPress={() => sendSOS("SOS")}
+                disabled={sending}
                 activeOpacity={0.9}
               >
-                <Text style={styles.sosBtnLabel}>SOS</Text>
-                <Text style={styles.sosBtnSub}>Tap to send</Text>
+                {sending ? (
+                  <ActivityIndicator size="large" color="white" />
+                ) : (
+                  <>
+                    <Text style={styles.sosBtnLabel}>SOS</Text>
+                    <Text style={styles.sosBtnSub}>Tap to send</Text>
+                  </>
+                )}
               </TouchableOpacity>
             </Animated.View>
           </View>
         </View>
         <Text style={styles.caption}>
-          Pressing SOS will immediately alert emergency services with your exact
-          GPS location
+          Pressing SOS immediately alerts emergency services with your exact GPS
+          location
         </Text>
       </View>
 
-      {/* Quick Options */}
+      {/* Quick type buttons */}
       <View style={styles.optionsGrid}>
         {quickOptions.map((opt, i) => (
           <TouchableOpacity
             key={i}
             style={styles.optionBtn}
             activeOpacity={0.7}
-            onPress={() => opt.isReport && router.push("/(tabs)/report")}
+            onPress={() => {
+              if (opt.isReport) {
+                router.push("/(tabs)/report");
+              } else if (opt.type) {
+                sendSOS(opt.type);
+              }
+            }}
           >
             <Text style={styles.optionIcon}>{opt.icon}</Text>
             <Text style={styles.optionLabel}>{opt.label}</Text>
@@ -122,10 +218,14 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 6,
+    maxWidth: 150,
   },
-  locationText: { fontSize: 11, color: Colors.green, fontWeight: "500" },
-
-  // SOS center
+  locationText: {
+    fontSize: 11,
+    color: Colors.green,
+    fontWeight: "500",
+    flex: 1,
+  },
   center: {
     flex: 1,
     alignItems: "center",
@@ -182,8 +282,6 @@ const styles = StyleSheet.create({
     marginTop: 24,
     lineHeight: 20,
   },
-
-  // Options
   optionsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",

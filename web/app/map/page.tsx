@@ -1,40 +1,100 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { db } from "@/lib/firebase";
+import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import StatCard from "@/components/Statcard";
+import BroadcastModal from "@/components/BroadcastModal";
+import { useAuthGuard } from "@/lib/useAuthGuard";
 
-const pins = [
-  { top: "38%", left: "72%", type: "crit", label: "Bull Bay — CRITICAL" },
-  { top: "22%", left: "82%", type: "crit", label: "Buff Bay — CRITICAL" },
-  { top: "50%", left: "55%", type: "hi", label: "Portmore — HIGH" },
-  { top: "45%", left: "50%", type: "hi", label: "Spanish Town — HIGH" },
-  { top: "65%", left: "42%", type: "hi", label: "May Pen — HIGH" },
-  { top: "35%", left: "68%", type: "med", label: "Kingston — MEDIUM" },
-  { top: "28%", left: "75%", type: "med", label: "Harbour View — MEDIUM" },
-  { top: "55%", left: "28%", type: "med", label: "Mandeville — MEDIUM" },
-  { top: "20%", left: "30%", type: "lo", label: "Montego Bay — LOW" },
-  { top: "32%", left: "60%", type: "lo", label: "Constant Spring — LOW" },
-];
+interface Report {
+  id: string;
+  type: string;
+  severity: "critical" | "high" | "medium" | "low";
+  status: "pending" | "progress" | "resolved";
+  location: { lat: number; lng: number; address?: string };
+  parish: string;
+  createdAt: any;
+}
 
-const sosList = [
-  { coords: "18.042°N, 76.712°W", area: "Bull Bay area", time: "14:18" },
-  { coords: "17.981°N, 76.891°W", area: "Portmore area", time: "13:02" },
-];
+// Convert GPS coordinates to percentage positions on the map mock.
+// Jamaica spans roughly lat 17.7–18.5, lng -78.4 to -76.2
+// We map those ranges to 0–100% on the mock map div.
+function coordsToPosition(lat: number, lng: number) {
+  const top = ((18.5 - lat) / (18.5 - 17.7)) * 80 + 5; // % from top
+  const left = ((lng - -78.4) / (-76.2 - -78.4)) * 85 + 5; // % from left
+  return {
+    top: `${Math.min(Math.max(top, 5), 90)}%`,
+    left: `${Math.min(Math.max(left, 5), 90)}%`,
+  };
+}
 
-const shelters = [
-  {
-    name: "Bull Bay Primary School",
-    parish: "St. Andrew",
-    used: 340,
-    total: 400,
-  },
-  {
-    name: "Portmore Community Centre",
-    parish: "St. Catherine",
-    used: 210,
-    total: 500,
-  },
-  { name: "Buff Bay High School", parish: "Portland", used: 490, total: 500 },
-];
+// Map severity to pin CSS class
+const sevToPin: Record<string, string> = {
+  critical: "crit",
+  high: "hi",
+  medium: "med",
+  low: "lo",
+};
 
 export default function MapPage() {
+  const { loading: authLoading } = useAuthGuard();
+  const [showModal, setShowModal] = useState(false);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (authLoading) return;
+
+    const q = query(collection(db, "reports"), orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as Report[];
+      // Filter out resolved reports client-side to avoid needing a composite index
+      setReports(data.filter((r) => r.status !== "resolved"));
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [authLoading]);
+
+  if (authLoading) return null;
+
+  // Derived counts from real data
+  const critical = reports.filter((r) => r.severity === "critical").length;
+  const sos = reports.filter((r) =>
+    r.type?.toLowerCase().includes("sos"),
+  ).length;
+
+  const formatTime = (timestamp: any) => {
+    if (!timestamp) return "—";
+    const date = timestamp.toDate?.() ?? new Date(timestamp);
+    return date.toLocaleTimeString("en-JM", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  // Hardcoded shelters for now — you can move these to Firestore later
+  const shelters = [
+    {
+      name: "Bull Bay Primary School",
+      parish: "St. Andrew",
+      used: 340,
+      total: 400,
+    },
+    {
+      name: "Portmore Community Centre",
+      parish: "St. Catherine",
+      used: 210,
+      total: 500,
+    },
+    { name: "Buff Bay High School", parish: "Portland", used: 490, total: 500 },
+  ];
+
   return (
     <div>
       <div className="page-header">
@@ -46,51 +106,64 @@ export default function MapPage() {
         </div>
         <div style={{ display: "flex", gap: "10px" }}>
           <button className="btn btn-outline">Filter by Type</button>
-          <button className="btn btn-primary">Broadcast Alert</button>
+          <button
+            className="btn btn-primary"
+            onClick={() => setShowModal(true)}
+          >
+            Broadcast Alert
+          </button>
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats from real data */}
       <div className="stats-grid">
         <StatCard
           label="Active Incidents"
-          value={30}
-          change="Across 6 parishes"
+          value={loading ? "—" : reports.length}
+          change="Non-resolved reports"
           variant="critical"
         />
         <StatCard
-          label="SOS Alerts"
-          value={7}
-          change="2 unresponded"
+          label="Critical"
+          value={loading ? "—" : critical}
+          change="Highest severity"
           variant="high"
         />
         <StatCard
-          label="Units Deployed"
-          value={12}
-          change="3 available"
+          label="Shelters Open"
+          value={3}
+          change="2,140 total capacity"
           variant="medium"
         />
         <StatCard
-          label="Shelters Open"
-          value={8}
-          change="2,140 capacity"
+          label="Resolved Today"
+          value="—"
+          change="Check reports page"
           variant="resolved"
         />
       </div>
 
-      {/* Map */}
+      {/* Map — pins come from real Firestore reports */}
       <div className="map-mock">
         <div className="map-grid" />
-        <div className="map-label">JAMAICA — INCIDENT MAP</div>
+        <div className="map-label">
+          JAMAICA — INCIDENT MAP
+          {loading ? " · Loading..." : ` · ${reports.length} active`}
+        </div>
 
-        {pins.map((pin, i) => (
-          <div
-            key={i}
-            className={`map-pin ${pin.type}`}
-            style={{ top: pin.top, left: pin.left }}
-            title={pin.label}
-          />
-        ))}
+        {reports.map((r) => {
+          // Use GPS coords if available, otherwise skip the pin
+          if (!r.location?.lat || !r.location?.lng) return null;
+          const pos = coordsToPosition(r.location.lat, r.location.lng);
+          return (
+            <div
+              key={r.id}
+              className={`map-pin ${sevToPin[r.severity] ?? "lo"}`}
+              style={{ top: pos.top, left: pos.left }}
+              title={`${r.type} — ${r.severity.toUpperCase()} — ${r.location.address ?? r.parish}`}
+            />
+          );
+        })}
 
         <div className="map-legend">
           {[
@@ -107,37 +180,57 @@ export default function MapPage() {
         </div>
       </div>
 
-      {/* SOS + Shelters */}
+      {/* Active Reports + Shelters */}
       <div className="grid-2" style={{ marginTop: "20px" }}>
+        {/* Active reports list */}
         <div className="card">
           <div className="card-header">
-            <div className="card-title">SOS Alerts — Unresponded</div>
+            <div className="card-title">Active Incidents</div>
           </div>
           <div className="card-body" style={{ padding: "0 20px" }}>
-            {sosList.map((s, i) => (
-              <div key={i} className="report-item">
-                <div className="severity-dot sev-critical" />
-                <div className="report-info">
-                  <div className="report-title">SOS from {s.coords}</div>
-                  <div className="report-meta">
-                    {s.area} · Received {s.time} · No unit assigned
-                  </div>
-                </div>
-                <button
-                  className="btn btn-primary"
-                  style={{
-                    fontSize: "11px",
-                    padding: "5px 12px",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Assign Unit
-                </button>
+            {loading ? (
+              <div
+                style={{
+                  padding: "20px",
+                  color: "var(--gray)",
+                  fontSize: "13px",
+                }}
+              >
+                Loading...
               </div>
-            ))}
+            ) : reports.length === 0 ? (
+              <div
+                style={{
+                  padding: "20px",
+                  color: "var(--gray)",
+                  fontSize: "13px",
+                }}
+              >
+                No active incidents.
+              </div>
+            ) : (
+              reports.slice(0, 5).map((r) => (
+                <div key={r.id} className="report-item">
+                  <div className={`severity-dot sev-${r.severity}`} />
+                  <div className="report-info">
+                    <div className="report-title">{r.type}</div>
+                    <div className="report-meta">
+                      {r.location?.address ?? r.parish} ·{" "}
+                      {formatTime(r.createdAt)}
+                    </div>
+                  </div>
+                  <span className={`status-pill pill-${r.status}`}>
+                    {r.status === "progress"
+                      ? "In Progress"
+                      : r.status.charAt(0).toUpperCase() + r.status.slice(1)}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
+        {/* Shelters */}
         <div className="card">
           <div className="card-header">
             <div className="card-title">Open Shelters</div>
@@ -169,6 +262,8 @@ export default function MapPage() {
           </div>
         </div>
       </div>
+
+      {showModal && <BroadcastModal onClose={() => setShowModal(false)} />}
     </div>
   );
 }
