@@ -1,16 +1,20 @@
+Link for Figma with project wireframes and architecture diagram
+https://www.figma.com/design/4bOAcgNMpTl3zsbmuKRbPh/Untitled?node-id=0-1&t=d41KImDfitJlp0OD-1
+
+Link for Google Doc with project information and planning
+https://docs.google.com/document/d/16dKeV_OgdPc54RCsI9KOy-QtmX9rlxQKQdSq9o-G0RI/edit?tab=t.0
+
+---
+
+System Requirements for testing
 - [Node.js](https://nodejs.org) (version 18 or higher) — download and install the LTS version
 - [Git](https://git-scm.com/downloads) — for cloning the repository
 - [Expo Go](https://expo.dev/go) — **only if** you want to browse the app UI (push notifications won't work in Expo Go)
 
 To check if Node.js is installed, open your terminal and run:
-
 ```bash
 node --version
 ```
-
-If you see a version number you're good. If not, install it from the link above.
-
----
 
 ## Step 1 — Clone the Repository
 
@@ -47,25 +51,9 @@ cd mobile
 npx expo start --dev-client --tunnel
 ```
 
-A QR code will appear in the terminal. Scan it with the development build app on your phone (see Step 5).
+A QR code will appear in the terminal. Scan it with the development build app on your phone.
 
 ---
-
-## Step 5 — Running the Mobile App on Your Phone
-
-The mobile app requires a **development build** — this is different from the regular Expo Go app.
-
-1. Ask the project lead to send you the **EAS build link** (looks like `https://expo.dev/accounts/jordanlaylor0/...`)
-2. Open that link on your **Android phone**
-3. Download and install the APK
-   - If your phone asks about installing from unknown sources, tap **Allow**
-4. Open the installed app on your phone
-5. Scan the QR code from Terminal 3 above
-
-> The app will now load and connect to your local dev server. Any code changes you make will update the app automatically.
-
----
-
 ## Project Structure
 
 ```
@@ -91,23 +79,4 @@ COMP3901_PROJECT/
 | `mobile/lib/firebase.ts` | Firebase config (mobile) |
 | `backend/server.js` | Push notification API |
 
----
 
-## Common Issues
-
-**`npm install` fails**
-Make sure you are inside the correct folder (`web`, `mobile`, or `backend`) before running the command.
-
-**Web app shows a blank page or login error**
-Your `web/.env.local` file is missing or in the wrong place. It should be directly inside the `/web` folder.
-
-**Mobile app says "Unable to connect"**
-Make sure Terminal 3 is running with `--tunnel`. Without the tunnel flag it only works on the same WiFi network.
-
-**Mobile app crashes on open**
-Your `mobile/.env` file is missing. Make sure it's inside the `/mobile` folder and contains all the Firebase keys.
-
-**Backend error: "Cannot find serviceAccountKey.json"**
-The `serviceAccountKey.json` file needs to be inside the `/backend` folder. Get it from the project lead.
-
----
